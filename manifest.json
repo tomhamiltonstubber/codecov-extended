@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "CodeCov Extended",
+  "description": "Some useful tools to help with CodeCov",
+  "version": "0.1",
+  "content_scripts": [
+    {
+      "js": [
+        "scripts/main.js"
+      ],
+      "matches": [
+        "https://app.codecov.io/*"
+      ]
+    }
+  ]
+}
