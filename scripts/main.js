@@ -2,9 +2,20 @@ let gbl_first_run = true
 let gbl_lines = {}
 let gbl_totals = {}
 
-const uncovered_color = '#e79191'
-const covered_colour = '#48d361'
-const partial_colour = 'yellow'
+const dft_covered_colour = '#48d361'
+const dft_uncovered_color = '#e79191'
+const dft_partial_colour = 'yellow'
+let covered_colour, uncovered_color, partial_colour
+
+chrome.storage.sync.get({
+  covered_colour: dft_covered_colour,
+  uncovered_colour: dft_uncovered_color,
+  partial_colour: dft_partial_colour,
+}, function(items) {
+  covered_colour = items.covered_colour
+  uncovered_color = items.uncovered_colour
+  partial_colour = items.partial_colour
+});
 
 // Utility functions
 

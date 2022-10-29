@@ -3,6 +3,13 @@
   "name": "CodeCov Extended",
   "description": "Some useful tools to help with CodeCov",
   "version": "0.1",
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": false
+  },
+  "permissions": [
+    "storage"
+  ],
   "content_scripts": [
     {
       "js": [
