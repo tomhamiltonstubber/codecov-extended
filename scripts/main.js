@@ -1,27 +1,25 @@
-const uncovered = '#e79191'
-const covered = '#48d361'
-const partial = 'yellow'
+let gbl_first_run = true
+let gbl_lines = {}
+let gbl_totals = {}
 
-// We need to save some variables globally as they all get wiped if the user minimises a file's diff
-let gbl_row_totals = {}
-let problem_lines = {}
-let all_tables_expanded = false
-let max_trs_expanded = 0
+const uncovered_color = '#e79191'
+const covered_colour = '#48d361'
+const partial_colour = 'yellow'
 
+// Utility functions
+
+function debounce(func){
+  let timer;
+  return () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { func.apply(this); }, 300);
+  };
+}
 
 function get_tables () {
   const tbody = document.querySelector('tbody[data-testid="body-row"]')
   if (tbody) {
     return document.querySelectorAll('tbody[data-testid="body-row"] > table')
-  } else {
-    return []
-  }
-}
-
-function get_rows () {
-  const tbody = document.querySelector('tbody[data-testid="body-row"]')
-  if (tbody) {
-    return tbody.children
   } else {
     return []
   }
@@ -34,31 +32,6 @@ function get_trs () {
   } else {
     return []
   }
-}
-
-function expand_tables () {
-  // The first thing we need to do is expand all tables, otherwise we don't have access to any coverage data.
-  function _expand_tables () {
-    const rows = get_trs()
-    if (rows.length) {
-      for (let i = 0; i < rows.length ; i++) {
-        let row = rows[i]
-        const patch_percent = row.children.item(2).querySelector('span[data-testid="number-value"]')
-        const change_percent = row.children.item(3).querySelector('div[data-testid="change-value"]')
-        if (change_percent && change_percent.innerText !== '-' && patch_percent && patch_percent.innerText !== '100.00%') {
-          let _row = document.querySelector('tbody').querySelectorAll('tr')[i]
-          _row.querySelector('div[data-testid="name-expand"]').click()
-          max_trs_expanded ++
-        }
-      }
-      all_tables_expanded = true
-    } else {
-      setTimeout(() => {
-        _expand_tables()
-      }, 200)
-    }
-  }
-  _expand_tables()
 }
 
 function _hash_string (s) {
@@ -76,21 +49,90 @@ function _hash_string (s) {
   return Math.abs(hash)
 }
 
-function _process_problem_line (line, type, table) {
-  const hash = _hash_string(line.innerText)
-  if (!problem_lines[hash]) {
-    problem_lines[hash] = {
-      'string': line.innerText,
-      'type': type,
-      'table_id': table.id,
-      'el_id': 'line_' + hash,
-      'tr_id': table.getAttribute('tr_id'),
+function _add_total_tr_cell (tr, type) {
+  let new_td = document.createElement('td')
+  const classes_to_copy = tr.lastChild.classList
+  new_td.classList.add(...Object.values(classes_to_copy))
+  new_td.innerHTML = (`
+<div class="w-full flex justify-end">
+  <div class="font-semibold" style="background-color: ${type === 'partial' ? partial_colour : uncovered_color}">
+    <span id="${tr.id}_${type}" class="font-lato">0</span>
+  </div>
+</div>
+`)
+  tr.append(new_td)
+}
+
+function _get_row_filename (row) {
+  // This could change in future, let's hope it doesn't
+  return row.querySelector('.break-all').innerText
+}
+
+// Code that runs on first load and each time a file diff is expanded or collapsed
+
+function _remove_progress_bars () {
+  // The progress bars are really unnecessary IMO
+  const progress_bars = document.querySelectorAll('div[data-testid="org-progress-bar"]')
+  if (progress_bars.length) {
+    for (let i = 0; i < progress_bars.length ; i++) {
+      progress_bars[i].parentElement.remove()
+    }
+  }
+}
+
+function _add_tr_extra_data () {
+  // Adding the extra data and cells to each `tr` to be filled later
+  const rows = get_trs()
+  if (rows.length) {
+    for (let i = 0; i < rows.length; i++) {
+      const tr_row = rows[i]
+      if (!tr_row.id) {
+        tr_row.id = 'tr_' + i
+        tr_row.dataset.file_name = _get_row_filename(tr_row)
+        _add_total_tr_cell(tr_row, 'partial')
+        _add_total_tr_cell(tr_row, 'uncovered')
+      }
+    }
+  }
+}
+
+function _add_table_tr_ids () {
+  // Adding an id and tr_id to each `table` so that we can refer to it later
+  const tables = get_tables()
+  if (tables.length) {
+    for (let i = 0; i < tables.length; i++) {
+      const table = tables[i]
+      if (!table.dataset.tr_id) {
+        let prev_sibling = table.previousSibling
+        while (prev_sibling.nodeName !== 'TR') {
+          prev_sibling = prev_sibling.previousSibling
+        }
+        table.dataset.tr_id = prev_sibling.id
+        table.id = 'table_' + i
+      }
+    }
+  }
+}
+
+function _process_line (line, line_number, type, table) {
+  // Adds a new line to the `lines` object and returns the line's hash
+  const hash = _hash_string(line.innerText, line_number)
+  if (!gbl_lines[hash]) {
+    gbl_lines[hash] = {
+      text: line.innerText,
+      type: type,
+      bg_colour: type === 'partial' ? partial_colour : uncovered_color,
+      table_id: table.id,
+      el_id: 'line_' + hash,
+      tr_id: table.dataset.tr_id,
+      line_number: line_number
     }
   }
   return hash
 }
 
-function update_diff (table, update_totals) {
+function _process_table (table) {
+  // Colours each uncovered/partial line and adds new lines to the `lines` object
   const lines = table.querySelectorAll('tr[data-testid="fv-diff-line"]')
   let uncovered_count = 0
   let covered_count = 0
@@ -101,148 +143,117 @@ function update_diff (table, update_totals) {
     const head = line.children.item(1)
     const code = line.children.item(2)
     const operator = code.querySelector('.token.operator')
+    const line_number = head.children.item(0).innerText
+    line.dataset.line_number = line_number
     if (operator && operator.innerText[0] === '-') {
       line.hidden = true
     } else if (head.classList.contains('bg-ds-coverage-covered')) {
-      master.style.background = head.style.background = code.style.background = covered
+      master.style.background = head.style.background = code.style.background = covered_colour
       covered_count ++
     } else if (head.classList.contains('bg-ds-coverage-partial')) {
-      master.style.background = head.style.background = code.style.background = partial
-      line.id = 'line_' + _process_problem_line(code, 'partial', table)
+      master.style.background = head.style.background = code.style.background = partial_colour
+      line.id = 'line_' + _process_line(code, line_number, 'partial', table)
       partial_count ++
     } else if (head.classList.contains('bg-ds-coverage-uncovered')) {
-      master.style.background = head.style.background = code.style.background = uncovered
-      line.id = 'line_' + _process_problem_line(code, 'uncovered', table)
+      master.style.background = head.style.background = code.style.background = uncovered_color
+      line.id = 'line_' + _process_line(code, line_number, 'uncovered', table)
       uncovered_count ++
     }
   }
-  if (update_totals) {
-    table.dataset.uncovered = uncovered_count
-    table.dataset.partial = partial_count
-  }
+  table.dataset.uncovered = uncovered_count.toString()
+  table.dataset.partial = partial_count.toString()
 }
 
-function process_table_lines (update_totals) {
-  const tables = get_tables()
-  if (tables.length) {
-    if (tables.length) {
-      for (let i = 0; i < tables.length; i++) {
-        const table = tables[i]
-        table.id = 'table_' + i
-        update_diff(table, update_totals)
-      }
-    }
-  }
-}
-
-function _add_extra_cell (tr, type) {
-  let new_td = document.createElement('td')
-  const classes_to_copy = tr.lastChild.classList
-  new_td.classList.add(...Object.values(classes_to_copy))
-  new_td.innerHTML = `<div class="w-full flex justify-end">
-  <div class="font-semibold" style="background-color: ${type === 'partial' ? partial : uncovered}">
-    <span id=${tr.id}_${type} class="font-lato">0</span>
-  </div>
-</div>`
-  tr.lastChild.after(new_td)
-}
-
-function _row_is_expanded (row) {
-  return row.nextSibling ? row.nextSibling.nodeName !== 'TR' : false
-}
-
-function _get_row_filename (row) {
-  // This could change in future, let's hope it doesn't
-  return row.querySelector('.break-all').innerText
-}
-
-function add_tr_extra_data () {
-  const rows = get_trs()
-  if (rows.length) {
-    for (let i = 0; i < rows.length; i++) {
-      const tr_row = rows[i]
-      tr_row.id = 'tr_' + i
-      tr_row.dataset.file_name = _get_row_filename(tr_row)
-      _add_extra_cell(tr_row, 'partial')
-      _add_extra_cell(tr_row, 'uncovered')
-    }
-  }
-}
-
-function add_table_tr_ids () {
+function _process_tables () {
+  // Processes each table to add the diff lines to it and update the totals if needed.
   const tables = get_tables()
   if (tables.length) {
     for (let i = 0; i < tables.length; i++) {
       const table = tables[i]
-      let prev_sibling = table.previousSibling
-      while (prev_sibling.nodeName !== 'TR') {
-        prev_sibling = prev_sibling.previousSibling
+      if (!table.dataset.unprocessed) {
+        _process_table(table)
       }
-      table.setAttribute('tr_id', prev_sibling.id)
     }
   }
 }
 
-function add_row_totals () {
-  let rows_to_update = {}
-  const rows = get_rows()
-  let current_tr_id
-  if (rows.length) {
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i]
-      if (row.dataset.row_processed === undefined) {
-        if (row.nodeName === 'TR') {
-          if (!_row_is_expanded(row) && gbl_row_totals[row.id]) {
-            rows_to_update[row.id] = gbl_row_totals[row.id]
-          }
-          current_tr_id = row.id
-        } else if (row.nodeName === 'TABLE') {
-          if (current_tr_id in rows_to_update) {
-            rows_to_update[current_tr_id].partial += parseInt(row.dataset.partial)
-            rows_to_update[current_tr_id].uncovered += parseInt(row.dataset.uncovered)
+function _process_totals () {
+  // If first use, creates the `gbl_totals` object with totals for each file. Populates the extra `tr` cells with the totals.
+  if (gbl_first_run) {
+    const tables = get_tables()
+    if (tables.length) {
+      for (let i = 0; i < tables.length; i++) {
+        const table = tables[i]
+        if (!table.dataset.totals_processed) {
+          const tr_id = table.dataset.tr_id
+          if (gbl_totals[tr_id]) {
+            gbl_totals[tr_id].partial += parseInt(table.dataset.partial)
+            gbl_totals[tr_id].uncovered += parseInt(table.dataset.uncovered)
           } else {
-            rows_to_update[current_tr_id] = {
-              partial: parseInt(row.dataset.partial),
-              uncovered: parseInt(row.dataset.uncovered)
+            gbl_totals[tr_id] = {
+              partial: parseInt(table.dataset.partial),
+              uncovered: parseInt(table.dataset.uncovered)
             }
           }
+          table.dataset.totals_processed = 'processed'
         }
-        row.dataset.row_processed = 'row_processed'
       }
     }
   }
-  return rows_to_update
-}
-
-function  update_tr_totals (tr_totals) {
-  for (const row_id in tr_totals) {
-    const row = tr_totals[row_id]
-    const tr = document.getElementById(`tr_${row_id}`)
-    if (tr && !tr.dataset.totals_added) {
-      document.getElementById(`tr_${row_id}_partial`).innerText = row.partial
-      document.getElementById(`tr_${row_id}_uncovered`).innerText = row.uncovered
-      gbl_row_totals[row_id] = row
-      tr.dataset.totals_added = 'totals_added'
+  const trs = get_trs()
+  if (trs.length) {
+    for (let i = 0; i < trs.length; i++) {
+      const tr_row = trs[i]
+      const row_totals = gbl_totals[tr_row.id]
+      if (row_totals) {
+        document.getElementById(`${tr_row.id}_partial`).innerText = row_totals.partial
+        document.getElementById(`${tr_row.id}_uncovered`).innerText = row_totals.uncovered
+      }
     }
   }
 }
 
-function setup_table_diff_observer () {
-  const t_observer = new MutationObserver(() => {
-    process_table_lines(false)
-  })
-  t_observer.observe(document.body, {childList: true, subtree: true})
+function _update_sidebar_links () {
+  // Updates the sidebar links to point to the correct line. If the line is hidden (the diff is collapsed) then link
+  // to the `tr` instead.
+  const lines_with_links = document.querySelectorAll('.line-link')
+  if (lines_with_links.length) {
+    for (let i = 0; i < lines_with_links.length; i++) {
+      const line = lines_with_links[i]
+      line.onclick = e => {
+        e.preventDefault()
+        let line_el = document.getElementById(line.dataset.link)
+        if (!line_el) {
+          line_el = document.getElementById(line.dataset.tr_link)
+        }
+        line_el.scrollIntoView()
+      }
+    }
+  }
 }
+
+const update_all = debounce(() => {
+  _remove_progress_bars()
+  _add_tr_extra_data()
+  _add_table_tr_ids()
+  _process_tables()
+  _process_totals()
+  if (!gbl_first_run) {
+    _update_sidebar_links()
+  }
+})
+
+// Creating and updating the sidebar
 
 function _get_line_filename (line) {
   return document.getElementById(line.tr_id).dataset.file_name
 }
 
-function file_line_lookup () {
+function _file_line_lookup () {
   let lookup = {}
-  const lines = Object.values(problem_lines)
+  const lines = Object.values(gbl_lines)
   lines.sort((a, b) => {
-    return a.table_id - b.table_id
+    return b.table_id - a.table_id || a.line_number - b.line_number
   })
   lines.forEach(line => {
     const file_name = _get_line_filename(line)
@@ -255,136 +266,148 @@ function file_line_lookup () {
   return lookup
 }
 
-function setup_line_links () {
-  const lines_with_links = document.querySelectorAll('.line-link')
-  console.log(lines_with_links)
-  if (lines_with_links.length) {
-    for (let i = 0; i < lines_with_links.length; i++) {
-      const line = lines_with_links[i]
-      line.onclick = e => {
-        console.log('foo')
-        e.preventDefault()
-        document.getElementById(line.dataset.link).scrollIntoView()
+function _format_line_text (line) {
+  let text = line.text
+  if (text[0] === '+' || text[0] === '-') {
+    text = text.substring(1)
+  }
+  text = text.trim()
+  if (text.length > 50) {
+    text = text.slice(0, 50) + '…'
+  }
+  return text
+}
+
+function _sidebar_totals_line (p_count, u_count) {
+  return (`
+<p>
+  Total: <span style="background-color: ${partial_colour}">${p_count} partial</span> lines and <span style="background-color: ${uncovered_color}">${u_count} uncovered</span> lines
+</p>
+<p class="text-xs pb-4">Click on a line to jump to it.</p>
+`)
+}
+
+function _sidebar_missed_line (line_link, line_tr_link, line_bg, line_text) {
+  return (`
+<dd class="pl-2 text-xs mt-0.5 text-ds-gray-quinary">
+  <li>
+    <a href="" data-link="${line_link}" data-tr_link="${line_tr_link}" class="line-link" style="background-color: ${line_bg}">${line_text}</a>
+  </li>
+</dd>
+`)
+}
+
+function create_sidebar () {
+  // Creates the sidebar with links to each missed item. Has to wait for the first_run to be finished.
+  function _create_sidebar () {
+    if (gbl_first_run) {
+      setTimeout(function () {_create_sidebar()}, 500)
+    } else {
+      const grouped_lines = _file_line_lookup()
+      let sidebar_body_html = ''
+      let u_count = 0
+      let p_count = 0
+      for (const filename in grouped_lines) {
+        const lines = grouped_lines[filename]
+        sidebar_body_html += `<dt class="font-semibold">${filename}</dt>`
+        lines.forEach(line => {
+          const line_text = _format_line_text(line)
+          const line_el = document.getElementById(line.el_id)
+          let line_link = line_el ? line.el_id : line.tr_id
+          let line_tr_link = line.tr_id
+          if (line.type === 'uncovered') {
+            u_count += 1
+          } else {
+            p_count += 1
+          }
+          sidebar_body_html += _sidebar_missed_line(line_link, line_tr_link, line.bg_colour, line_text)
+        })
       }
+      const aside = document.querySelector('aside')
+      const sidebar_head = aside.children.item(0).children.item(0)
+      sidebar_head.classList.remove('flex', 'pb-4')
+      sidebar_head.innerHTML = _sidebar_totals_line(p_count, u_count)
+      const sidebar_body = aside.children.item(0).children.item(1)
+      sidebar_body.innerHTML = `<dl>${sidebar_body_html}</dl>`
+      _update_sidebar_links()
     }
   }
+  _create_sidebar()
 }
 
-function update_sidebar () {
-  const sidebar_body = document.getElementById('sidebar-body')
-  let new_dl = document.createElement('dl')
-  let dl_inner = ''
-  const grouped_lines = file_line_lookup()
-  for (const filename in grouped_lines) {
-    const lines = grouped_lines[filename]
-    dl_inner += `<dt class="font-semibold">${filename}</dt>`
-    lines.forEach(line => {
-      let text = line.string.trim()
-      if (text[0] === '+' || text[0] === '-') {
-        text = text.substring(1)
-      }
-      if (text.length > 75) {
-        text = text.slice(0, 75) + '…'
-      }
-      let line_link
-      const line_el = document.getElementById(line.line_id)
-      if (line_el) {
-        line_link = line_el.id
+// Code that just runs the first time we load the page
+
+const _table_observer = (mutations) => {
+  if (mutations && mutations.length > 0) {
+    mutations.forEach(function (mutation) {
+      if (mutation.addedNodes && mutation.addedNodes.length > 0) {
+        mutation.addedNodes.forEach(function (node) {
+          if (node.nodeName === 'TABLE') {
+            update_all()
+          }
+        })
       } else {
-        line_link = line.tr_id
+        // We need to check if no tables are expanded and then update the rows with their totals again
+        const tables = get_tables()
+        if (!tables.length) {
+          update_all()
+        }
       }
-      dl_inner += `<dd class="pl-2 text-xs mt-0.5 text-ds-gray-quinary"><a data-link="${line_link}" href="" class="line-link">${text}</a></dd>`
     })
   }
-  new_dl.innerHTML = dl_inner
-  sidebar_body.append(new_dl)
-  setup_line_links()
 }
 
-function post_tables_process () {
+function setup_table_diff_observer () {
+  // Occurs when a file is expanded or collapsed. CodeCov regenerate everything so we have to run the code again.
+  const t_observer = new MutationObserver(_table_observer)
+  t_observer.observe(document.body, {childList: true, subtree: true})
+}
+
+function load_first_time () {
   // Checks that the max amount of rows has been loaded. Some rows take a while to load, and we can't do anything
   // until they have all loaded.
   let old_row_count = 0
   let same_count = 0
-  function _wait_rows_expanded () {
+  function _load_first_time () {
     let new_row_count = get_trs().length || 0
     if (old_row_count === 0 || new_row_count !== old_row_count) {
       old_row_count = new_row_count
-      setTimeout(function () {_wait_rows_expanded()}, 500)
+      setTimeout(function () {_load_first_time()}, 500)
     } else if (same_count < 4) {
       same_count ++
-      setTimeout(function () {_wait_rows_expanded()}, 500)
+      setTimeout(function () {_load_first_time()}, 500)
     } else {
-      console.log('Finished loading rows')
-      add_tr_extra_data()
-      add_table_tr_ids()
-      process_table_lines(true)
-      const tr_totals = add_row_totals()
-      update_tr_totals(tr_totals)
-      update_sidebar()
-    // setup_table_diff_observer()
+      console.log('Finished loading for first time')
+      gbl_first_run = false
     }
   }
-  _wait_rows_expanded()
+  _load_first_time()
 }
 
-function _add_extra_header (tr, title) {
-  let new_th = document.createElement('th')
-  new_th.innerHTML = `<div class="flex flex-row grow gap-1 items-center select-none">
-  <span class="w-full text-right">${title}</span>
-</div>`
-  tr.lastChild.after(new_th)
-}
-
-function create_extra_headers () {
-  function _create_extra_headers () {
-    const header = document.querySelector('thead[data-testid="header-row"]')
-    if (header) {
-      const tr = header.children.item(0)
-      _add_extra_header(tr, 'New partials')
-      _add_extra_header(tr, 'New uncovered')
+function expand_tables () {
+  // The first thing we need to do is expand all tables, otherwise we don't have access to any coverage data.
+  function _expand_tables () {
+    const rows = get_trs()
+    if (rows.length) {
+      for (let i = 0; i < rows.length ; i++) {
+        let row = rows[i]
+        const patch_percent = row.children.item(2).querySelector('span[data-testid="number-value"]')
+        const change_percent = row.children.item(3).querySelector('div[data-testid="change-value"]')
+        if (change_percent && change_percent.innerText !== '-' && patch_percent && patch_percent.innerText !== '100.00%') {
+          let _row = document.querySelector('tbody').querySelectorAll('tr')[i]
+          _row.querySelector('div[data-testid="name-expand"]').click()
+        }
+      }
     } else {
       setTimeout(() => {
-        _create_extra_headers()
-      }, 500)
+        _expand_tables()
+      }, 200)
     }
   }
-  _create_extra_headers()
+  _expand_tables()
 }
 
-function edit_commits_section () {
-  function _edit_commits_section () {
-    const aside = document.querySelector('aside')
-    if (aside) {
-      const head = aside.children.item(0).children.item(0)
-      head.innerText = 'Partial/uncovered lines'
-      const body = aside.children.item(0).children.item(1)
-      body.id = 'sidebar-body'
-      body.innerHTML = ''
-    } else {
-      setTimeout(() => {
-        _edit_commits_section()
-      }, 500)
-    }
-  }
-  _edit_commits_section()
-}
-
-function remove_progress_bars () {
-  const progress_bars = document.querySelectorAll('div[data-testid="org-progress-bar"]')
-  if (progress_bars.length) {
-    for (let i = 0; i < progress_bars.length ; i++) {
-      progress_bars[i].parentElement.remove()
-    }
-  }
-}
-
-
-const pb_observer = new MutationObserver(remove_progress_bars)
-pb_observer.observe(document.body, {childList: true, subtree: true})
-
-
-create_extra_headers()
-edit_commits_section()
+setup_table_diff_observer()
 expand_tables()
-post_tables_process()
+load_first_time()
+create_sidebar()

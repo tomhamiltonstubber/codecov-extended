@@ -1,0 +1,15 @@
+.dot {
+  height: 10px;
+  width: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.line-link {
+  color: #333;
+}
+
+.line-link:hover {
+  color: #111;
+}

@@ -8,6 +8,9 @@
       "js": [
         "scripts/main.js"
       ],
+      "css": [
+        "css/styles.css"
+      ],
       "matches": [
         "https://app.codecov.io/*"
       ]
